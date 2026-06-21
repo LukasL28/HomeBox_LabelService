@@ -10,7 +10,10 @@ services:
       - LABEL_DEFAULT_HEIGHT=128
       - LABEL_DEFAULT_DPI=180
       - LABEL_AUTO_WIDTH=true
-      - LABEL_GAP=8
+      - LABEL_AUTO_HEIGHT=true
+      - LABEL_CODE_FILL_HEIGHT=false
+      - LABEL_MARGIN=0
+      - LABEL_GAP=0
       - LABEL_URL_PREFIX=
     networks:
       - internal

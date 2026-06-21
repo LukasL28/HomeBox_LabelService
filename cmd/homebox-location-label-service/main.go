@@ -45,6 +45,8 @@ type config struct {
 	FontSize        float64
 	MaxTextLines    int
 	AutoWidth       bool
+	AutoHeight      bool
+	CodeFillHeight  bool
 	MaxWidth        int
 	URLPrefix       string
 	Foreground      color.Color
@@ -69,6 +71,7 @@ type labelParams struct {
 	URL                 string
 	DynamicLength       bool
 	AutoWidth           bool
+	AutoHeight          bool
 	TitleFontSize       float64
 	DescriptionFontSize float64
 	Raw                 url.Values
@@ -126,6 +129,8 @@ func loadConfig() config {
 		FontSize:        envFloat("LABEL_FONT_SIZE", 0),
 		MaxTextLines:    envInt("LABEL_MAX_TEXT_LINES", 1),
 		AutoWidth:       envBool("LABEL_AUTO_WIDTH", true),
+		AutoHeight:      envBool("LABEL_AUTO_HEIGHT", true),
+		CodeFillHeight:  envBool("LABEL_CODE_FILL_HEIGHT", false),
 		MaxWidth:        envInt("LABEL_MAX_WIDTH", 4096),
 		URLPrefix:       envString("LABEL_URL_PREFIX", ""),
 		Foreground:      color.Black,
@@ -157,7 +162,7 @@ func handleLabel(cfg config) http.HandlerFunc {
 		}
 
 		if cfg.LogRequests {
-			log.Printf("render label width=%d height=%d auto_width=%t code=%s text=%q", params.Width, params.Height, params.AutoWidth, cfg.CodeType, labelText)
+			log.Printf("render label width=%d height=%d code_size=%d auto_width=%t auto_height=%t code_fill_height=%t code=%s text=%q", params.Width, params.Height, params.CodeSize, params.AutoWidth, params.AutoHeight, cfg.CodeFillHeight, cfg.CodeType, labelText)
 		}
 
 		img, err := renderLabel(params, cfg, labelText)
@@ -181,8 +186,11 @@ func parseParams(q url.Values, cfg config) labelParams {
 	height := clamp(parseInt(q.Get("Height"), cfg.DefaultHeight), 32, 2048)
 	margin := clamp(parseInt(q.Get("Margin"), cfg.DefaultMargin), 0, height/3)
 	gap := clamp(parseInt(firstNonEmpty(q.Get("Gap"), q.Get("ComponentPadding")), cfg.DefaultGap), 0, maxWidth/4)
-	codeSize := parseInt(q.Get("QrSize"), cfg.DefaultCodeSize)
-	if codeSize <= 0 {
+	codeSize := cfg.DefaultCodeSize
+	if !cfg.CodeFillHeight {
+		codeSize = parseInt(q.Get("QrSize"), cfg.DefaultCodeSize)
+	}
+	if cfg.CodeFillHeight || codeSize <= 0 {
 		codeSize = height - (margin * 2)
 	}
 	codeSize = clamp(codeSize, 16, max(16, height-(margin*2)))
@@ -194,6 +202,7 @@ func parseParams(q url.Values, cfg config) labelParams {
 
 	dynamicLength := parseBool(q.Get("DynamicLength"), false)
 	autoWidth := parseBool(firstNonEmpty(q.Get("AutoWidth"), q.Get("DynamicWidth")), cfg.AutoWidth || dynamicLength)
+	autoHeight := parseBool(firstNonEmpty(q.Get("AutoHeight"), q.Get("DynamicHeight")), cfg.AutoHeight)
 
 	return labelParams{
 		Width:               width,
@@ -208,6 +217,7 @@ func parseParams(q url.Values, cfg config) labelParams {
 		URL:                 strings.TrimSpace(q.Get("URL")),
 		DynamicLength:       dynamicLength,
 		AutoWidth:           autoWidth,
+		AutoHeight:          autoHeight,
 		TitleFontSize:       parseFloat(q.Get("TitleFontSize"), 0),
 		DescriptionFontSize: parseFloat(q.Get("DescriptionFontSize"), 0),
 		Raw:                 q,
@@ -307,6 +317,16 @@ func renderLabel(p labelParams, cfg config, labelText string) (*image.RGBA, erro
 		face, _, lines = chooseTextLayout(labelText, p, cfg, textWidth, contentHeight)
 	}
 
+	metrics := face.Metrics()
+	lineHeight := int(math.Ceil(float64(metrics.Height) / 64.0))
+	totalTextHeight := lineHeight * len(lines)
+
+	if p.AutoHeight {
+		requiredContentHeight := max(codeSize, totalTextHeight)
+		imgH = requiredContentHeight + (p.Margin * 2)
+		imgH = clamp(imgH, 16, p.Height)
+	}
+
 	img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: cfg.Background}, image.Point{}, draw.Src)
 
@@ -327,9 +347,6 @@ func renderLabel(p labelParams, cfg config, labelText string) (*image.RGBA, erro
 		return img, nil
 	}
 
-	metrics := face.Metrics()
-	lineHeight := int(math.Ceil(float64(metrics.Height) / 64.0))
-	totalTextHeight := lineHeight * len(lines)
 	baseline := ((imgH - totalTextHeight) / 2) + int(math.Ceil(float64(metrics.Ascent)/64.0))
 	minBaseline := p.Margin + int(math.Ceil(float64(metrics.Ascent)/64.0))
 	if baseline < minBaseline {

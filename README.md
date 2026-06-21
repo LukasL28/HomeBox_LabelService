@@ -9,6 +9,7 @@ It renders a PNG label with:
 - no visible Homebox asset ID
 - no left/right outer margin by default
 - automatic label width by default, so the PNG is only as wide as the code + gap + text
+- automatic label height by default, so Homebox-provided `Height` does not leave unused white space above/below the code
 
 The code encodes the Homebox `URL` parameter so scanning the label opens the Homebox page. The visible text is intentionally location-only.
 
@@ -38,6 +39,8 @@ Additional supported parameters:
 
 - `AutoWidth`
 - `DynamicWidth`
+- `AutoHeight`
+- `DynamicHeight`
 - `Gap`
 
 Unknown parameters are ignored.
@@ -82,14 +85,15 @@ environment:
   - LABEL_TEXT_SOURCE=LocationName
 ```
 
-## Auto width and margins
+## Auto width, auto height and margins
 
 By default:
 
 ```text
 LABEL_AUTO_WIDTH=true
+LABEL_AUTO_HEIGHT=true
 LABEL_MARGIN=0
-LABEL_GAP=8
+LABEL_GAP=0
 ```
 
 This means the output width is calculated as:
@@ -98,14 +102,26 @@ This means the output width is calculated as:
 matrix width + gap + rendered text width
 ```
 
+The output height is also cropped to the actual content height. This avoids the large white band above and below the label content when Homebox sends a tall `Height` plus a smaller `QrSize`.
+
 There is no extra white space on the left or right side. `LABEL_GAP` only controls the space between the matrix code and the text.
 
-Set this if you want fixed-width labels again:
+Set this if you want fixed-width / fixed-height labels again:
 
 ```yaml
 environment:
   - LABEL_AUTO_WIDTH=false
+  - LABEL_AUTO_HEIGHT=false
   - LABEL_DEFAULT_WIDTH=696
+  - LABEL_DEFAULT_HEIGHT=128
+```
+
+If you want the matrix code to fill the complete requested label height instead of cropping the output height, use:
+
+```yaml
+environment:
+  - LABEL_AUTO_HEIGHT=false
+  - LABEL_CODE_FILL_HEIGHT=true
 ```
 
 ## Matrix / QR URL prefix
@@ -144,9 +160,11 @@ If `LABEL_URL_PREFIX` is empty, the original Homebox URL is encoded unchanged.
 | `LABEL_DEFAULT_HEIGHT` | `128` | Fallback label height in px. |
 | `LABEL_DEFAULT_DPI` | `180` | Fallback DPI. Brother P-touch is often 180 dpi. |
 | `LABEL_AUTO_WIDTH` | `true` | Shrink output width to the actual content width. |
+| `LABEL_AUTO_HEIGHT` | `true` | Crop output height to the actual content height. |
+| `LABEL_CODE_FILL_HEIGHT` | `false` | Ignore Homebox `QrSize` and make the matrix/code fill the requested label height. |
 | `LABEL_MAX_WIDTH` | `4096` | Safety cap for auto-width output. |
-| `LABEL_MARGIN` | `0` | Vertical margin in px. Horizontal outer margin is always zero in the renderer. |
-| `LABEL_GAP` | `8` | Gap between code and text in px. |
+| `LABEL_MARGIN` | `0` | Outer margin in px. Horizontal outer margin is zero when margin is zero. |
+| `LABEL_GAP` | `0` | Gap between code and text in px. |
 | `LABEL_COMPONENT_PADDING` | `8` | Backward-compatible alias for the gap if `LABEL_GAP` is not set. |
 | `LABEL_CODE_SIZE` | `0` | `0` means auto-size from label height. |
 | `LABEL_FONT_SIZE` | `0` | `0` means auto-size from label height or Homebox font size. |
@@ -190,7 +208,10 @@ services:
       - LABEL_DEFAULT_HEIGHT=128
       - LABEL_DEFAULT_DPI=180
       - LABEL_AUTO_WIDTH=true
-      - LABEL_GAP=8
+      - LABEL_AUTO_HEIGHT=true
+      - LABEL_CODE_FILL_HEIGHT=false
+      - LABEL_MARGIN=0
+      - LABEL_GAP=0
       - LABEL_URL_PREFIX=
     networks:
       - internal
