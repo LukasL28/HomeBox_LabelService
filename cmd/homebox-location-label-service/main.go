@@ -33,24 +33,27 @@ var version = "dev"
 var assetIDPattern = regexp.MustCompile(`^\s*[A-Za-z]*\d{2,4}[-_. ]?\d{2,6}\s*$`)
 
 type config struct {
-	Port             string
-	CodeType         string
-	TextSource       string
-	DefaultWidth     int
-	DefaultHeight    int
-	DefaultDPI       float64
-	DefaultMargin    int
-	DefaultPadding   int
-	DefaultCodeSize  int
-	FontSize         float64
-	MaxTextLines     int
-	Foreground       color.Color
-	Background       color.Color
-	LogRequests      bool
-	TrimURLForQR     bool
-	HomeboxBaseURL   string
-	ReadHeaderLimit  int
-	ShutdownTimeout  time.Duration
+	Port            string
+	CodeType        string
+	TextSource      string
+	DefaultWidth    int
+	DefaultHeight   int
+	DefaultDPI      float64
+	DefaultMargin   int
+	DefaultGap      int
+	DefaultCodeSize int
+	FontSize        float64
+	MaxTextLines    int
+	AutoWidth       bool
+	MaxWidth        int
+	URLPrefix       string
+	Foreground      color.Color
+	Background      color.Color
+	LogRequests     bool
+	TrimURLForQR    bool
+	HomeboxBaseURL  string
+	ReadHeaderLimit int
+	ShutdownTimeout time.Duration
 }
 
 type labelParams struct {
@@ -58,13 +61,14 @@ type labelParams struct {
 	Height              int
 	DPI                 float64
 	Margin              int
-	Padding             int
+	Gap                 int
 	CodeSize            int
 	TitleText           string
 	DescriptionText     string
 	AdditionalInfo      string
 	URL                 string
 	DynamicLength       bool
+	AutoWidth           bool
 	TitleFontSize       float64
 	DescriptionFontSize float64
 	Raw                 url.Values
@@ -116,11 +120,14 @@ func loadConfig() config {
 		DefaultWidth:    envInt("LABEL_DEFAULT_WIDTH", 696),
 		DefaultHeight:   envInt("LABEL_DEFAULT_HEIGHT", 128),
 		DefaultDPI:      envFloat("LABEL_DEFAULT_DPI", 180),
-		DefaultMargin:   envInt("LABEL_MARGIN", 8),
-		DefaultPadding:  envInt("LABEL_COMPONENT_PADDING", 10),
+		DefaultMargin:   envInt("LABEL_MARGIN", 0),
+		DefaultGap:      envInt("LABEL_GAP", envInt("LABEL_COMPONENT_PADDING", 8)),
 		DefaultCodeSize: envInt("LABEL_CODE_SIZE", 0),
 		FontSize:        envFloat("LABEL_FONT_SIZE", 0),
-		MaxTextLines:    envInt("LABEL_MAX_TEXT_LINES", 2),
+		MaxTextLines:    envInt("LABEL_MAX_TEXT_LINES", 1),
+		AutoWidth:       envBool("LABEL_AUTO_WIDTH", true),
+		MaxWidth:        envInt("LABEL_MAX_WIDTH", 4096),
+		URLPrefix:       envString("LABEL_URL_PREFIX", ""),
 		Foreground:      color.Black,
 		Background:      color.White,
 		LogRequests:     envBool("LABEL_LOG_REQUESTS", false),
@@ -150,7 +157,7 @@ func handleLabel(cfg config) http.HandlerFunc {
 		}
 
 		if cfg.LogRequests {
-			log.Printf("render label width=%d height=%d code=%s text=%q", params.Width, params.Height, cfg.CodeType, labelText)
+			log.Printf("render label width=%d height=%d auto_width=%t code=%s text=%q", params.Width, params.Height, params.AutoWidth, cfg.CodeType, labelText)
 		}
 
 		img, err := renderLabel(params, cfg, labelText)
@@ -169,33 +176,38 @@ func handleLabel(cfg config) http.HandlerFunc {
 }
 
 func parseParams(q url.Values, cfg config) labelParams {
-	width := clamp(parseInt(q.Get("Width"), cfg.DefaultWidth), 64, 4096)
+	maxWidth := max(1, cfg.MaxWidth)
+	width := clamp(parseInt(q.Get("Width"), cfg.DefaultWidth), 1, maxWidth)
 	height := clamp(parseInt(q.Get("Height"), cfg.DefaultHeight), 32, 2048)
-	margin := clamp(parseInt(q.Get("Margin"), cfg.DefaultMargin), 0, min(width, height)/3)
-	padding := clamp(parseInt(q.Get("ComponentPadding"), cfg.DefaultPadding), 0, width/4)
+	margin := clamp(parseInt(q.Get("Margin"), cfg.DefaultMargin), 0, height/3)
+	gap := clamp(parseInt(firstNonEmpty(q.Get("Gap"), q.Get("ComponentPadding")), cfg.DefaultGap), 0, maxWidth/4)
 	codeSize := parseInt(q.Get("QrSize"), cfg.DefaultCodeSize)
 	if codeSize <= 0 {
-		codeSize = min(height-(margin*2), height-4)
+		codeSize = height - (margin * 2)
 	}
-	codeSize = clamp(codeSize, 16, min(width/2, max(16, height-(margin*2))))
+	codeSize = clamp(codeSize, 16, max(16, height-(margin*2)))
 
 	dpi := parseFloat(q.Get("Dpi"), cfg.DefaultDPI)
 	if dpi <= 0 {
 		dpi = cfg.DefaultDPI
 	}
 
+	dynamicLength := parseBool(q.Get("DynamicLength"), false)
+	autoWidth := parseBool(firstNonEmpty(q.Get("AutoWidth"), q.Get("DynamicWidth")), cfg.AutoWidth || dynamicLength)
+
 	return labelParams{
 		Width:               width,
 		Height:              height,
 		DPI:                 dpi,
 		Margin:              margin,
-		Padding:             padding,
+		Gap:                 gap,
 		CodeSize:            codeSize,
 		TitleText:           strings.TrimSpace(q.Get("TitleText")),
 		DescriptionText:     strings.TrimSpace(q.Get("DescriptionText")),
 		AdditionalInfo:      strings.TrimSpace(firstNonEmpty(q.Get("AdditionalInformation"), q.Get("AdditionalInfo"), q.Get("ID"), q.Get("Id"))),
 		URL:                 strings.TrimSpace(q.Get("URL")),
-		DynamicLength:       parseBool(q.Get("DynamicLength"), false),
+		DynamicLength:       dynamicLength,
+		AutoWidth:           autoWidth,
 		TitleFontSize:       parseFloat(q.Get("TitleFontSize"), 0),
 		DescriptionFontSize: parseFloat(q.Get("DescriptionFontSize"), 0),
 		Raw:                 q,
@@ -248,51 +260,80 @@ func renderLabel(p labelParams, cfg config, labelText string) (*image.RGBA, erro
 		codeSize = p.CodeSize
 	}
 
-	imgW := p.Width
 	imgH := p.Height
-	if p.DynamicLength {
-		// Keep Homebox-compatible behavior simple: never shrink, only allow more room for long visible text.
-		imgW = max(imgW, estimateDynamicWidth(labelText, imgH))
+	contentHeight := max(1, imgH-(p.Margin*2))
+	gap := p.Gap
+	if !codeEnabled || strings.TrimSpace(labelText) == "" {
+		gap = 0
+	}
+
+	maxWidth := max(1, cfg.MaxWidth)
+	imgW := p.Width
+	textX := 0
+	textWidth := imgW
+
+	if codeEnabled {
+		textX = codeSize + gap
+		textWidth = imgW - textX
+	}
+	if textWidth < 1 {
+		textWidth = 1
+	}
+
+	face, _, lines := chooseTextLayout(labelText, p, cfg, textWidth, contentHeight)
+
+	if p.AutoWidth {
+		maxAutoTextWidth := max(1, maxWidth-codeSize-gap)
+		face, _, lines = chooseTextLayout(labelText, p, cfg, maxAutoTextWidth, contentHeight)
+		measuredTextWidth := maxLineWidth(face, lines)
+
+		imgW = codeSize
+		if measuredTextWidth > 0 {
+			if codeEnabled {
+				imgW += gap
+			}
+			imgW += measuredTextWidth
+		}
+		imgW = clamp(imgW, 1, maxWidth)
+
+		textX = 0
+		if codeEnabled {
+			textX = codeSize
+			if measuredTextWidth > 0 {
+				textX += gap
+			}
+		}
+		textWidth = max(1, imgW-textX)
+		face, _, lines = chooseTextLayout(labelText, p, cfg, textWidth, contentHeight)
 	}
 
 	img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: cfg.Background}, image.Point{}, draw.Src)
 
-	textX := p.Margin
-	textWidth := imgW - (p.Margin * 2)
 	if codeEnabled {
-		codeData := p.URL
-		if cfg.TrimURLForQR && cfg.HomeboxBaseURL != "" {
-			codeData = strings.TrimPrefix(codeData, cfg.HomeboxBaseURL)
-		}
-		if codeData == "" {
-			codeData = labelText
-		}
+		codeData := codePayload(p, cfg, labelText)
 		code, err := makeCode(codeData, cfg.CodeType, codeSize)
 		if err != nil {
 			return nil, err
 		}
 		codeY := (imgH - codeSize) / 2
-		if codeY < p.Margin {
-			codeY = p.Margin
+		if codeY < 0 {
+			codeY = 0
 		}
-		draw.Draw(img, image.Rect(p.Margin, codeY, p.Margin+codeSize, codeY+codeSize), code, image.Point{}, draw.Over)
-		textX = p.Margin + codeSize + p.Padding
-		textWidth = imgW - textX - p.Margin
+		draw.Draw(img, image.Rect(0, codeY, codeSize, codeY+codeSize), code, image.Point{}, draw.Over)
 	}
 
-	if textWidth < 12 {
+	if textWidth < 1 || strings.TrimSpace(labelText) == "" {
 		return img, nil
 	}
-
-	face, fontSize, lines := chooseTextLayout(labelText, p, cfg, textWidth, imgH-(p.Margin*2))
 
 	metrics := face.Metrics()
 	lineHeight := int(math.Ceil(float64(metrics.Height) / 64.0))
 	totalTextHeight := lineHeight * len(lines)
 	baseline := ((imgH - totalTextHeight) / 2) + int(math.Ceil(float64(metrics.Ascent)/64.0))
-	if baseline < p.Margin+int(math.Ceil(float64(metrics.Ascent)/64.0)) {
-		baseline = p.Margin + int(math.Ceil(float64(metrics.Ascent)/64.0))
+	minBaseline := p.Margin + int(math.Ceil(float64(metrics.Ascent)/64.0))
+	if baseline < minBaseline {
+		baseline = minBaseline
 	}
 
 	drawer := &font.Drawer{
@@ -306,8 +347,19 @@ func renderLabel(p labelParams, cfg config, labelText string) (*image.RGBA, erro
 		drawer.DrawString(line)
 	}
 
-	_ = fontSize
 	return img, nil
+}
+
+func codePayload(p labelParams, cfg config, labelText string) string {
+	if strings.TrimSpace(p.URL) == "" {
+		return labelText
+	}
+
+	codeData := p.URL
+	if cfg.TrimURLForQR && cfg.HomeboxBaseURL != "" {
+		codeData = strings.TrimPrefix(codeData, cfg.HomeboxBaseURL)
+	}
+	return cfg.URLPrefix + codeData
 }
 
 func makeCode(data string, codeType string, size int) (image.Image, error) {
@@ -352,6 +404,12 @@ func chooseTextLayout(text string, p labelParams, cfg config, maxWidth int, maxH
 	}
 	if fontSize < 7 {
 		fontSize = 7
+	}
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+	if maxHeight < 1 {
+		maxHeight = 1
 	}
 
 	maxLines := cfg.MaxTextLines
@@ -424,6 +482,9 @@ func wrapText(text string, face font.Face, maxWidth int, maxLines int) []string 
 }
 
 func ellipsize(text string, face font.Face, maxWidth int) string {
+	if maxWidth < 1 {
+		return ""
+	}
 	if font.MeasureString(face, text).Ceil() <= maxWidth {
 		return text
 	}
@@ -438,8 +499,14 @@ func ellipsize(text string, face font.Face, maxWidth int) string {
 	return "…"
 }
 
-func estimateDynamicWidth(text string, height int) int {
-	return max(256, len([]rune(text))*int(float64(height)*0.38)+height)
+func maxLineWidth(face font.Face, lines []string) int {
+	maxWidth := 0
+	for _, line := range lines {
+		if w := font.MeasureString(face, line).Ceil(); w > maxWidth {
+			maxWidth = w
+		}
+	}
+	return maxWidth
 }
 
 func runHealthcheck(port string) error {
@@ -539,17 +606,9 @@ func clamp(v, minValue, maxValue int) int {
 	return v
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func max(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
 }
-
