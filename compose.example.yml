@@ -1,0 +1,27 @@
+services:
+  homebox-label-service:
+    image: ghcr.io/lukasl28/homebox-location-label-service:latest
+    container_name: homebox-label-service
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - LABEL_CODE_TYPE=datamatrix
+      - LABEL_TEXT_SOURCE=location
+      - LABEL_DEFAULT_WIDTH=696
+      - LABEL_DEFAULT_HEIGHT=128
+      - LABEL_DEFAULT_DPI=180
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  homebox:
+    # Keep your existing Homebox image, volumes, labels and environment.
+    # Only add/keep this environment line and make sure Homebox is on the same network.
+    environment:
+      - HBOX_LABEL_MAKER_LABEL_SERVICE_URL=http://homebox-label-service:8080/
+
+
