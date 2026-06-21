@@ -6,3 +6,5 @@ require (
 	github.com/boombuler/barcode v1.0.2
 	golang.org/x/image v0.23.0
 )
+
+require golang.org/x/text v0.21.0 // indirect

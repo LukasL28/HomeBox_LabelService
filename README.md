@@ -171,3 +171,9 @@ curl -o label.png "http://homebox-label-service:8080/?Width=696&Height=128&Dpi=1
 ```
 
 The PNG should show a code on the left and `Regal Rot` as the only visible text.
+
+
+## GitHub Actions build note
+
+The `go.sum` file must be committed. The Docker build copies `go.mod` and `go.sum` before downloading modules, so GHCR builds are reproducible and do not fail with missing checksum entries.
+

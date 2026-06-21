@@ -23,5 +23,3 @@ services:
     # Only add/keep this environment line and make sure Homebox is on the same network.
     environment:
       - HBOX_LABEL_MAKER_LABEL_SERVICE_URL=http://homebox-label-service:8080/
-
-
